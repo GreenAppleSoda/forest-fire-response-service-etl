@@ -38,11 +38,18 @@ jobs:
       - name: Run ETL
         env:
           KMA_AUTH_KEY: ${{ secrets.KMA_AUTH_KEY }}
+          # 1번 DB (필수)
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_PORT: ${{ secrets.DB_PORT }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_NAME: ${{ secrets.DB_NAME }}
+          # 2번 DB (선택: secrets에 등록한 경우에만 적재)
+          DB2_HOST: ${{ secrets.DB2_HOST }}
+          DB2_PORT: ${{ secrets.DB2_PORT }}
+          DB2_USER: ${{ secrets.DB2_USER }}
+          DB2_PASSWORD: ${{ secrets.DB2_PASSWORD }}
+          DB2_NAME: ${{ secrets.DB2_NAME }}
         run: |
           DATE_ARG="${{ github.event.inputs.date }}"
           if [ -z "$DATE_ARG" ]; then DATE_ARG="yesterday"; fi
