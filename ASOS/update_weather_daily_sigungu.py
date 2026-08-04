@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -34,6 +35,7 @@ from dotenv import load_dotenv
 HERE = Path(__file__).resolve().parent
 DEFAULT_ADMIN_JSON = HERE / "admin-sigungu.json"
 SCHEMA_SQL = HERE / "schema_weather_daily_sigungu.sql"
+KST = ZoneInfo("Asia/Seoul")
 
 ASOS_API_URL = "https://apihub.kma.go.kr/api/typ01/url/kma_sfcdd3.php"
 STN_INF_API_URL = "https://apihub.kma.go.kr/api/typ01/url/stn_inf.php"
@@ -208,8 +210,9 @@ def to_float(raw: Any) -> float | None:
 
 
 def parse_date_arg(value: str) -> datetime:
+    """yesterday/today 는 항상 KST(Asia/Seoul) 달력 기준."""
     v = value.strip().lower()
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.now(KST).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
     if v in ("yesterday", "어제"):
         return today - timedelta(days=1)
     if v in ("today", "오늘"):
