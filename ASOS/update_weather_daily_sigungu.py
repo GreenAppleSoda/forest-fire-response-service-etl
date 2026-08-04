@@ -7,6 +7,8 @@ ASOS kma_sfcdd3 API + admin-sigungu.json -> MariaDB weather_daily_sigungu.
 환경변수:
   KMA_AUTH_KEY
   DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+  (선택) DB2_HOST, DB2_PORT, DB2_USER, DB2_PASSWORD, DB2_NAME
+        — 설정되면 2번째 DB에도 동일 upsert
 
 예:
   python update_weather_daily_sigungu.py
@@ -128,28 +130,59 @@ def auth_key() -> str:
     return key
 
 
-def db_config() -> dict[str, Any]:
+def _db_config_from_prefix(prefix: str, *, required: bool) -> dict[str, Any] | None:
+    """prefix 예: 'DB' -> DB_HOST..., 'DB2' -> DB2_HOST..."""
     load_env()
-    host = os.getenv("DB_HOST")
-    user = os.getenv("DB_USER")
-    password = os.getenv("DB_PASSWORD")
-    database = os.getenv("DB_NAME")
-    port = int(os.getenv("DB_PORT") or "3306")
-    missing = [n for n, v in [
-        ("DB_HOST", host), ("DB_USER", user),
-        ("DB_PASSWORD", password), ("DB_NAME", database),
-    ] if not v]
+    host = os.getenv(f"{prefix}_HOST")
+    user = os.getenv(f"{prefix}_USER")
+    password = os.getenv(f"{prefix}_PASSWORD")
+    database = os.getenv(f"{prefix}_NAME")
+    port_raw = os.getenv(f"{prefix}_PORT")
+    vals = [host, user, password, database]
+    if not any(vals) and not port_raw:
+        if required:
+            raise SystemExit(
+                f"DB 환경변수 필요: {prefix}_HOST, {prefix}_USER, "
+                f"{prefix}_PASSWORD, {prefix}_NAME"
+            )
+        return None
+    missing = [
+        f"{prefix}_{n}"
+        for n, v in [
+            ("HOST", host),
+            ("USER", user),
+            ("PASSWORD", password),
+            ("NAME", database),
+        ]
+        if not v
+    ]
     if missing:
-        raise SystemExit(f"DB 환경변수 필요: {', '.join(missing)}")
+        raise SystemExit(f"DB 환경변수 불완전 ({prefix}): {', '.join(missing)}")
     return {
         "host": host,
         "user": user,
         "password": password,
         "database": database,
-        "port": port,
+        "port": int(port_raw or "3306"),
         "charset": "utf8mb4",
         "autocommit": False,
     }
+
+
+def db_config() -> dict[str, Any]:
+    """기본(1번) DB 설정."""
+    cfg = _db_config_from_prefix("DB", required=True)
+    assert cfg is not None
+    return cfg
+
+
+def db_targets() -> list[tuple[str, dict[str, Any]]]:
+    """적재 대상 DB 목록. DB2_* 가 모두 있으면 2번째도 포함."""
+    targets: list[tuple[str, dict[str, Any]]] = [("DB", db_config())]
+    cfg2 = _db_config_from_prefix("DB2", required=False)
+    if cfg2 is not None:
+        targets.append(("DB2", cfg2))
+    return targets
 
 
 def strip_admin(name: str) -> str:
@@ -452,7 +485,7 @@ def get_conn(cfg: dict[str, Any]):
     return pymysql.connect(**cfg)
 
 
-def init_schema(cfg: dict[str, Any]) -> None:
+def init_schema(cfg: dict[str, Any], *, label: str = "DB") -> None:
     sql = SCHEMA_SQL.read_text(encoding="utf-8")
     conn = get_conn(cfg)
     try:
@@ -462,7 +495,7 @@ def init_schema(cfg: dict[str, Any]) -> None:
                 if s:
                     cur.execute(s)
         conn.commit()
-        print(f"schema ok: {SCHEMA_SQL.name}", flush=True)
+        print(f"[{label}] schema ok: {SCHEMA_SQL.name}", flush=True)
     finally:
         conn.close()
 
@@ -492,6 +525,29 @@ def upsert(cfg: dict[str, Any], rows: list[dict[str, Any]], batch: int = 1000) -
     finally:
         conn.close()
     return n
+
+
+def upsert_all(
+    targets: list[tuple[str, dict[str, Any]]],
+    rows: list[dict[str, Any]],
+    batch: int = 1000,
+) -> dict[str, int]:
+    """여러 DB에 순차 upsert. 실패한 대상은 모아서 마지막에 실패 처리."""
+    counts: dict[str, int] = {}
+    errors: list[str] = []
+    for label, cfg in targets:
+        try:
+            n = upsert(cfg, rows, batch=batch)
+            counts[label] = n
+            host = cfg.get("host", "?")
+            db = cfg.get("database", "?")
+            print(f"   [{label}] upserted={n}  ({host}/{db})", flush=True)
+        except Exception as e:
+            errors.append(f"[{label}] {e}")
+            print(f"   [{label}] FAIL: {e}", flush=True)
+    if errors:
+        raise SystemExit("DB 적재 실패:\n" + "\n".join(errors))
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -549,9 +605,9 @@ def run(
             print(f"   {r}", flush=True)
         return daily
 
-    print("5) upsert MariaDB", flush=True)
-    n = upsert(db_config(), daily)
-    print(f"   upserted={n}", flush=True)
+    targets = db_targets()
+    print(f"5) upsert MariaDB  targets={','.join(t[0] for t in targets)}", flush=True)
+    upsert_all(targets, daily)
     return daily
 
 
@@ -567,7 +623,8 @@ def main() -> None:
     args = p.parse_args()
 
     if args.init_schema:
-        init_schema(db_config())
+        for label, cfg in db_targets():
+            init_schema(cfg, label=label)
         return
 
     if args.tm1 or args.tm2:
