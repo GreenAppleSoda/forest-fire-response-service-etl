@@ -1,0 +1,54 @@
+# 어제 ASOS 일자료 -> weather_daily_sigungu (매일 KST 03:00 + 수동 실행)
+name: weather-daily-sigungu
+
+on:
+  schedule:
+    # 18:00 UTC = 03:00 KST
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "YYYY-MM-DD or yesterday (default: yesterday)"
+        required: false
+        default: "yesterday"
+      dry_run:
+        description: "true면 DB 적재 생략"
+        required: false
+        default: "false"
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ASOS
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ASOS/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ETL
+        env:
+          KMA_AUTH_KEY: ${{ secrets.KMA_AUTH_KEY }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -z "$DATE_ARG" ]; then DATE_ARG="yesterday"; fi
+          DRY="${{ github.event.inputs.dry_run }}"
+          if [ "$DRY" = "true" ]; then
+            python update_weather_daily_sigungu.py --date "$DATE_ARG" --dry-run
+          else
+            python update_weather_daily_sigungu.py --date "$DATE_ARG"
+          fi
