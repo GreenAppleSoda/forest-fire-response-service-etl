@@ -33,7 +33,7 @@ jobs:
           cache-dependency-path: forestfire-stats/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirement.txt
+        run: pip install -r requirements.txt
 
       - name: Run ETL
         env:
