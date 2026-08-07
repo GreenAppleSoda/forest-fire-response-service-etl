@@ -1,9 +1,9 @@
-# 산불발생통계 API → forestfire_stats 전량교체 (내용 동일 시 skip)
-name: forestfire-stats
+# FFAS 산불통계 XHR → forestfire_stats 전량교체 (내용 동일 시 skip)
+name: forestfire-ffas
 
 on:
   schedule:
-    # 19:00 UTC = 04:00 KST (날씨 03:00 이후)
+    # 19:00 UTC = 04:00 KST (날씨 03:00 이후, 기존 forestfire-stats 와 동일)
     - cron: "0 19 * * *"
   workflow_dispatch:
     inputs:
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: forestfire-stats
+        working-directory: forestfire-crawlling
 
     steps:
       - uses: actions/checkout@v4
@@ -30,14 +30,14 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: forestfire-stats/requirements.txt
+          cache-dependency-path: forestfire-crawlling/requirements.txt
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Run ETL
         env:
-          DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+          TZ: Asia/Seoul
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_PORT: ${{ secrets.DB_PORT }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -51,7 +51,7 @@ jobs:
         run: |
           DRY="${{ github.event.inputs.dry_run }}"
           FORCE="${{ github.event.inputs.force }}"
-          ARGS=(--no-save-json)
+          ARGS=(--no-save)
           if [ "$DRY" = "true" ]; then ARGS+=(--dry-run); fi
           if [ "$FORCE" = "true" ]; then ARGS+=(--force); fi
-          python update_forestfire_stats.py "${ARGS[@]}"
+          python update_forestfire_stats_ffas.py "${ARGS[@]}"
