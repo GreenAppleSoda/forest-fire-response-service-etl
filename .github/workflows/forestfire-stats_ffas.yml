@@ -1,9 +1,9 @@
 # FFAS 산불통계 XHR → forestfire_stats 전량교체 (내용 동일 시 skip)
-name: forestfire-ffas
+name: forestfire-stats-ffas
 
 on:
   schedule:
-    # 19:00 UTC = 04:00 KST (날씨 03:00 이후, 기존 forestfire-stats 와 동일)
+    # 19:00 UTC = 04:00 KST (날씨 03:00 이후)
     - cron: "0 19 * * *"
   workflow_dispatch:
     inputs:
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: forestfire-crawlling
+        working-directory: forestfire-stats
 
     steps:
       - uses: actions/checkout@v4
@@ -30,10 +30,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: forestfire-crawlling/requirements.txt
+          cache-dependency-path: forestfire-stats/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirement.txt
 
       - name: Run ETL
         env:
