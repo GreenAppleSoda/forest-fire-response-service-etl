@@ -1,4 +1,5 @@
 # FFAS 산불통계 XHR → forestfire_stats 전량교체 (내용 동일 시 skip)
+# 실패 시 gh workflow run 으로 새 runner 재시도 (최대 3회)
 name: forestfire-stats-ffas
 
 on:
@@ -15,6 +16,14 @@ on:
         description: "true면 동일 내용이어도 전량교체"
         required: false
         default: "false"
+      retry:
+        description: "재시도 횟수 (자동 트리거용, 수동 실행 시 0)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+  actions: write
 
 jobs:
   update:
@@ -55,3 +64,25 @@ jobs:
           if [ "$DRY" = "true" ]; then ARGS+=(--dry-run); fi
           if [ "$FORCE" = "true" ]; then ARGS+=(--force); fi
           python update_forestfire_stats_ffas.py "${ARGS[@]}"
+
+      - name: Retry workflow on failure
+        if: failure()
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RETRY: ${{ github.event.inputs.retry || '0' }}
+          MAX_RETRY: "3"
+          DRY: ${{ github.event.inputs.dry_run || 'false' }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          n=$((RETRY + 1))
+          if [ "$n" -gt "$MAX_RETRY" ]; then
+            echo "retry limit reached ($RETRY/$MAX_RETRY) — stop"
+            exit 0
+          fi
+          echo "ETL failed; re-triggering workflow with retry=$n"
+          gh workflow run forestfire-stats_ffas.yml \
+            --ref "${{ github.ref_name }}" \
+            -f dry_run="$DRY" \
+            -f force="$FORCE" \
+            -f retry="$n"
