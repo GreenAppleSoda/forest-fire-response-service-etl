@@ -229,14 +229,58 @@ def parse_date_arg(value: str) -> datetime:
 # ASOS fetch (self-contained)
 # ---------------------------------------------------------------------------
 
+# connect 짧게, read 여유. 일시 타임아웃은 재시도로 흡수.
+HTTP_TIMEOUT = (20, 180)
+HTTP_RETRIES = 4
+HTTP_BACKOFF = (5.0, 15.0, 45.0)  # 시도 사이 대기(초), 마지막 실패 전까지만 사용
+_RETRYABLE_HTTP = (
+    requests.exceptions.ConnectTimeout,
+    requests.exceptions.ReadTimeout,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+
+def _http_get(url: str, *, params: dict[str, Any], label: str) -> requests.Response:
+    last: BaseException | None = None
+    for attempt in range(1, HTTP_RETRIES + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
+            # 5xx 만 재시도, 4xx 는 즉시 실패
+            if resp.status_code >= 500:
+                raise requests.exceptions.HTTPError(
+                    f"{resp.status_code} server error", response=resp
+                )
+            resp.raise_for_status()
+            if attempt > 1:
+                print(f"    {label}: ok on attempt {attempt}/{HTTP_RETRIES}", flush=True)
+            return resp
+        except _RETRYABLE_HTTP as e:
+            last = e
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            if status is not None and status >= 500:
+                last = e
+            else:
+                raise
+        if attempt < HTTP_RETRIES:
+            wait = HTTP_BACKOFF[min(attempt - 1, len(HTTP_BACKOFF) - 1)]
+            print(
+                f"    {label}: attempt {attempt}/{HTTP_RETRIES} failed "
+                f"({type(last).__name__}: {last}); retry in {wait:.0f}s",
+                flush=True,
+            )
+            time.sleep(wait)
+    assert last is not None
+    raise last
+
 
 def fetch_asos_period(tm1: str, tm2: str, stn: int, key: str) -> str:
-    resp = requests.get(
+    resp = _http_get(
         ASOS_API_URL,
         params={"tm1": tm1, "tm2": tm2, "stn": stn, "help": 0, "authKey": key},
-        timeout=300,
+        label=f"ASOS {tm1}~{tm2}",
     )
-    resp.raise_for_status()
     return resp.content.decode("euc-kr", errors="replace")
 
 
@@ -290,12 +334,11 @@ def collect_asos(start: datetime, end: datetime, stn: int, key: str) -> list[lis
 def fetch_station_names(key: str) -> dict[int, str]:
     """지점번호 -> 한글 지점명 (stn_inf)."""
     tm = datetime.now().strftime("%Y%m%d0900")
-    resp = requests.get(
+    resp = _http_get(
         STN_INF_API_URL,
         params={"inf": "SFC", "tm": tm, "stn": 0, "help": 0, "authKey": key},
-        timeout=120,
+        label="stn_inf",
     )
-    resp.raise_for_status()
     text = resp.content.decode("euc-kr", errors="replace")
     out: dict[int, str] = {}
     for line in text.splitlines():
