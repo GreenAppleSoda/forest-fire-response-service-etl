@@ -48,7 +48,10 @@ FIELD_TA_AVG = 10
 FIELD_HM_AVG = 18
 FIELD_RN_DAY = 38
 
-_MISSING = {-9.0, -9, -99.0, -99, -999.0, -999}
+# ASOS 요소별 결측 표기 (평균기온 -99 / 강수·풍속·습도 -9).
+# 기온에 -9 를 넣으면 영하 9℃ 실측이 NULL 로 떨어지므로 분리한다.
+_MISSING_TEMP = {-99.0, -99, -999.0, -999}
+_MISSING_DEFAULT = {-9.0, -9, -99.0, -99, -999.0, -999}
 _HELP_FIELD_RE = re.compile(r"^#\s*\d+\.\s*([A-Za-z0-9_]+)\s*:")
 _STN_KO_RE = re.compile(
     r"^\s*(\d+)\s+"  # STN_ID
@@ -194,7 +197,9 @@ def strip_admin(name: str) -> str:
     return name
 
 
-def to_float(raw: Any) -> float | None:
+def to_float(
+    raw: Any, *, missing: set[float | int] | None = None
+) -> float | None:
     if raw is None:
         return None
     s = str(raw).strip()
@@ -204,7 +209,7 @@ def to_float(raw: Any) -> float | None:
         v = float(s)
     except ValueError:
         return None
-    if v in _MISSING:
+    if v in (missing if missing is not None else _MISSING_DEFAULT):
         return None
     return v
 
@@ -381,7 +386,7 @@ def normalize_asos(
             "stn_id": stn_id,
             "stn_name": station_names.get(stn_id, str(stn_id)),
             "date": dt,
-            "temp_avg": to_float(row[FIELD_TA_AVG]),
+            "temp_avg": to_float(row[FIELD_TA_AVG], missing=_MISSING_TEMP),
             "precip": precip,
             "wind_avg": to_float(row[FIELD_WS_AVG]),
             "humidity_avg": to_float(row[FIELD_HM_AVG]),
@@ -542,6 +547,20 @@ def init_schema(cfg: dict[str, Any], *, label: str = "DB") -> None:
                     cur.execute(s)
         conn.commit()
         print(f"[{label}] schema ok: {SCHEMA_SQL.name}", flush=True)
+    finally:
+        conn.close()
+
+
+def truncate_weather_daily_sigungu(
+    cfg: dict[str, Any], *, label: str = "DB"
+) -> None:
+    """테이블 비우고 AUTO_INCREMENT 를 1부터 다시 시작."""
+    conn = get_conn(cfg)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE weather_daily_sigungu")
+        conn.commit()
+        print(f"[{label}] TRUNCATE weather_daily_sigungu", flush=True)
     finally:
         conn.close()
 
