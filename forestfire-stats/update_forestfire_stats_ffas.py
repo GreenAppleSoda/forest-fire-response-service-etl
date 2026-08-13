@@ -9,7 +9,8 @@ GitHub Actions 배포 단위 (이 폴더만):
 
 동일 DB 컬럼:
   date, datetime, province, city, town, village,
-  damage_area, cause, region_path, is_fire
+  damage_area, damage_amt, recover_amt, cause, region_path, is_fire
+  (damage_amt/recover_amt 단위: 천원)
 
 로컬:
   python update_forestfire_stats_ffas.py --dry-run
@@ -176,7 +177,7 @@ def transform_item(raw: dict[str, Any]) -> dict[str, Any]:
 
 DB_FIELDNAMES = [
     "date", "datetime", "province", "city", "town", "village",
-    "damage_area", "cause", "region_path", "is_fire",
+    "damage_area", "damage_amt", "recover_amt", "cause", "region_path", "is_fire",
 ]
 
 
@@ -233,6 +234,7 @@ def save_rows_csv(rows: list[dict[str, Any]], path: Path) -> None:
 SCHEMA_DDL = """
 -- 산불 발생 이력 (FFAS 산불통계 XHR → 전처리 → 전량교체 적재)
 -- damage_area 단위: ha (헥타르)
+-- damage_amt / recover_amt 단위: 천원 (홈페이지 백만원 = 값/1000)
 -- 지역명/region_path: 법정동 정식명 기준
 CREATE TABLE IF NOT EXISTS forestfire_stats (
     id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '내부 PK',
@@ -243,6 +245,8 @@ CREATE TABLE IF NOT EXISTS forestfire_stats (
     town            VARCHAR(40)     NULL     COMMENT '읍면동 (정식명)',
     village         VARCHAR(40)     NULL     COMMENT '리 (정식명)',
     damage_area     DECIMAL(10,2)   NOT NULL DEFAULT 0.00 COMMENT '피해면적 (ha)',
+    damage_amt      BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '피해액 (천원)',
+    recover_amt     BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '복구액 (천원)',
     cause           VARCHAR(50)     NOT NULL COMMENT '발생원인',
     region_path     VARCHAR(150)    NOT NULL COMMENT '시도 > 시군구 > 읍면동 > 리',
     is_fire         TINYINT         NOT NULL DEFAULT 1 COMMENT '산불 여부',
@@ -259,6 +263,13 @@ CREATE TABLE IF NOT EXISTS forestfire_stats (
   COLLATE=utf8mb4_unicode_ci
   COMMENT='산불발생통계 FFAS (정식 행정명, 전량교체)';
 """
+
+ALTER_AMOUNT_COLUMNS_SQL = """
+ALTER TABLE forestfire_stats
+    ADD COLUMN IF NOT EXISTS damage_amt BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '피해액 (천원)' AFTER damage_area,
+    ADD COLUMN IF NOT EXISTS recover_amt BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '복구액 (천원)' AFTER damage_amt
+"""
+
 
 def strip_key(name: str) -> str:
     s = re.sub(r"\s+", "", str(name).strip())
@@ -505,9 +516,9 @@ CITY_GU_CONCAT = (
 INSERT_SQL = """
 INSERT INTO forestfire_stats (
     date, `datetime`, province, city, town, village,
-    damage_area, cause, region_path, is_fire
+    damage_area, damage_amt, recover_amt, cause, region_path, is_fire
 ) VALUES (
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
 )
 """
 
@@ -584,15 +595,27 @@ def init_schema(cfg: dict[str, Any], *, label: str = "DB") -> None:
                 s = stmt.strip()
                 if s:
                     cur.execute(s)
+            cur.execute(ALTER_AMOUNT_COLUMNS_SQL)
         conn.commit()
         print(f"[{label}] schema ok: forestfire_stats", flush=True)
     finally:
         conn.close()
 
 
+def ensure_amount_columns(cfg: dict[str, Any]) -> None:
+    """기존 테이블에 피해액/복구액 컬럼이 없으면 추가."""
+    conn = get_conn(cfg)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(ALTER_AMOUNT_COLUMNS_SQL)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 FP_KEYS = (
     "date", "datetime", "province", "city", "town", "village",
-    "damage_area", "cause", "region_path", "is_fire",
+    "damage_area", "damage_amt", "recover_amt", "cause", "region_path", "is_fire",
 )
 
 
@@ -615,6 +638,8 @@ def rows_fingerprint(rows: list[dict[str, Any]]) -> tuple[str, int]:
                 v = ""
             elif k == "damage_area":
                 v = f"{float(v):.2f}"
+            elif k in ("damage_amt", "recover_amt"):
+                v = str(int(v or 0))
             else:
                 v = str(v)
             parts.append(v)
@@ -630,7 +655,8 @@ def load_db_rows(cfg: dict[str, Any]) -> list[dict[str, Any]]:
             cur.execute(
                 """
                 SELECT `date`, `datetime`, province, city, town, village,
-                       damage_area, cause, region_path, is_fire
+                       damage_area, damage_amt, recover_amt,
+                       cause, region_path, is_fire
                 FROM forestfire_stats
                 """
             )
@@ -653,9 +679,11 @@ def load_db_rows(cfg: dict[str, Any]) -> list[dict[str, Any]]:
                 "town": t[4],
                 "village": t[5],
                 "damage_area": round(float(t[6] or 0), 2),
-                "cause": t[7],
-                "region_path": t[8],
-                "is_fire": int(t[9]),
+                "damage_amt": int(t[7] or 0),
+                "recover_amt": int(t[8] or 0),
+                "cause": t[9],
+                "region_path": t[10],
+                "is_fire": int(t[11]),
             }
         )
     return out
@@ -670,6 +698,7 @@ def replace_all(
     force: bool = False,
 ) -> int:
     """내용이 동일하면 skip, 아니면 트랜잭션 DELETE+INSERT 전량교체."""
+    ensure_amount_columns(cfg)
     new_fp, new_n = rows_fingerprint(rows)
     if not force:
         try:
@@ -692,6 +721,8 @@ def replace_all(
             r["town"],
             r["village"],
             r["damage_area"],
+            r["damage_amt"],
+            r["recover_amt"],
             r["cause"],
             r["region_path"],
             r["is_fire"],
@@ -743,6 +774,17 @@ def _as_str(value: Any) -> str:
     if s.lower() in {"", "nan", "none", "unknown"}:
         return ""
     return s
+
+
+def _as_int_amt(value: Any) -> int:
+    """피해액/복구액 (천원). 없거나 파싱 실패면 0."""
+    try:
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            return 0
+        n = int(round(float(value)))
+        return max(0, n)
+    except (TypeError, ValueError):
+        return 0
 
 
 def fix_jeonnam_gwangju(province: str, city: str) -> tuple[str, str]:
@@ -1041,6 +1083,8 @@ def preprocess_items(items: list[dict]) -> list[dict[str, Any]]:
             damage = float(item.get("피해면적합계") or 0)
         except (TypeError, ValueError):
             damage = 0.0
+        damage_amt = _as_int_amt(item.get("피해액"))
+        recover_amt = _as_int_amt(item.get("복구액"))
 
         rows.append(
             {
@@ -1051,6 +1095,8 @@ def preprocess_items(items: list[dict]) -> list[dict[str, Any]]:
                 "town": town_f,
                 "village": village_f,
                 "damage_area": round(damage, 2),
+                "damage_amt": damage_amt,
+                "recover_amt": recover_amt,
                 "cause": cause,
                 "region_path": region_path,
                 "is_fire": 1,
