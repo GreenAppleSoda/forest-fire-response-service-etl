@@ -97,6 +97,23 @@ STATION_NAME_OVERRIDE = {
     "정선군": "정선",
 }
 
+# 광역시 관측소는 strip_admin 전에 해당 광역시로 보낸다.
+# "대구"는 끝이 "구"라 strip 하면 "대"가 되어 대전 대덕구에 붙고,
+# "광주"는 경기도 광주시와 키가 겹친다.
+# 제주는 넣지 않는다: 제주시는 strip 후 정확 매칭(184)이 맞고,
+# 고산 override="제주"가 METRO에 들어가면 제주+서귀포 중심으로 뭉개진다.
+# 과거 대구·광주·경기 광주 일대 학습/lag 기상은 이 오매칭으로 틀려 있었다.
+METRO = {
+    "서울": "서울",
+    "부산": "부산",
+    "대구": "대구",
+    "인천": "인천",
+    "광주": "광주",
+    "대전": "대전",
+    "울산": "울산",
+    "세종": "세종",
+}
+
 UPSERT_SQL = """
 INSERT INTO weather_daily_sigungu (
     obs_date, sigungu_code, sigungu_name, province,
@@ -416,6 +433,15 @@ def load_sigungu(path: Path) -> list[dict[str, Any]]:
 
 def match_station(stn_name: str, sig: list[dict[str, Any]]) -> dict[str, Any] | None:
     raw = STATION_NAME_OVERRIDE.get(stn_name, stn_name)
+    raw = re.sub(r"\s+", "", str(raw).strip())
+    raw = re.sub(r"\(.*\)$", "", raw)  # 대구(기) 등
+    if raw in METRO:
+        sub = [g for g in sig if g["province"] == METRO[raw]]
+        if sub:
+            cx = sum(g["x"] for g in sub) / len(sub)
+            cy = sum(g["y"] for g in sub) / len(sub)
+            return min(sub, key=lambda g: (g["x"] - cx) ** 2 + (g["y"] - cy) ** 2)
+
     key = strip_admin(raw)
 
     hit = [g for g in sig if g["key"] == key]
@@ -429,17 +455,6 @@ def match_station(stn_name: str, sig: list[dict[str, Any]]) -> dict[str, Any] | 
     if partial:
         exactish = [g for g in partial if g["key"].startswith(key)]
         return (exactish or partial)[0]
-
-    metro = {
-        "서울": "서울", "부산": "부산", "대구": "대구", "인천": "인천",
-        "광주": "광주", "대전": "대전", "울산": "울산", "세종": "세종", "제주": "제주",
-    }
-    if key in metro:
-        sub = [g for g in sig if g["province"] == metro[key]]
-        if sub:
-            cx = sum(g["x"] for g in sub) / len(sub)
-            cy = sum(g["y"] for g in sub) / len(sub)
-            return min(sub, key=lambda g: (g["x"] - cx) ** 2 + (g["y"] - cy) ** 2)
     return None
 
 
